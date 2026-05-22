@@ -15,6 +15,8 @@ Experimental paper-trading stock bot for Alpaca paper accounts only. It uses sim
 - Adds simulated slippage of `0.1%` per trade
 - Logs all skipped trades and reasons
 
+Note: Alpaca paper accounts may still report a margin multiplier. This bot does not reject that account state by itself; instead it enforces no-margin behavior by sizing buys against cash-only buying power.
+
 ## Project layout
 
 ```text

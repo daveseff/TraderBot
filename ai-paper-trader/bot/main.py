@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-from decimal import Decimal
 
 from .broker_alpaca import AlpacaPaperBroker
 from .config import Settings, load_settings
@@ -57,8 +56,16 @@ def run_scan(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) ->
 
 def run_trade(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) -> None:
     account = broker.get_account()
-    if account.multiplier and Decimal(str(account.multiplier)) > Decimal("1"):
-        raise RuntimeError("Margin accounts are not allowed for this bot.")
+    account_cash_limit = _get_cash_only_buying_power(account)
+    if account_cash_limit <= 0:
+        raise RuntimeError("No cash buying power available for paper trading.")
+
+    if getattr(account, "multiplier", None):
+        LOGGER.info(
+            "Account multiplier=%s detected; enforcing no-margin mode with cash-only buying power %.2f.",
+            account.multiplier,
+            account_cash_limit,
+        )
 
     positions = broker.get_positions()
     held_symbols = [position.symbol for position in positions]
@@ -96,7 +103,7 @@ def run_trade(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) -
     for candidate in candidates[:available_slots]:
         risk = check_buy_risk(
             settings=settings,
-            account_buying_power=float(account.buying_power),
+            account_buying_power=account_cash_limit,
             current_equity=float(account.equity),
             day_start_equity=day_start_equity,
             open_positions=held_symbols,
@@ -189,6 +196,20 @@ def run_close_all(settings: Settings, broker: AlpacaPaperBroker, journal: Journa
 def run_report(settings: Settings) -> None:
     path = generate_report(settings)
     LOGGER.info("Report written to %s", path)
+
+
+def _get_cash_only_buying_power(account) -> float:
+    values: list[float] = []
+    for field_name in ("cash", "non_marginable_buying_power", "buying_power"):
+        raw_value = getattr(account, field_name, None)
+        if raw_value is None:
+            continue
+        try:
+            values.append(float(raw_value))
+        except (TypeError, ValueError):
+            continue
+    positive_values = [value for value in values if value > 0]
+    return min(positive_values) if positive_values else 0.0
 
 
 def build_parser() -> argparse.ArgumentParser:
