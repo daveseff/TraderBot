@@ -1,0 +1,220 @@
+from __future__ import annotations
+
+import argparse
+import logging
+from decimal import Decimal
+
+from .broker_alpaca import AlpacaPaperBroker
+from .config import Settings, load_settings
+from .journal import DecisionLog, Journal
+from .market_data import MarketDataService
+from .report import generate_report
+from .risk import check_buy_risk, estimate_slippage_cost
+from .strategy import rank_candidates
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+LOGGER = logging.getLogger(__name__)
+
+
+def run_scan(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) -> None:
+    del broker
+    market_data = MarketDataService(settings)
+    frames = market_data.get_recent_bars(settings.universe)
+    candidates = rank_candidates(frames)
+    ranked_symbols = {candidate.symbol for candidate in candidates}
+    for symbol, frame in frames.items():
+        if symbol in ranked_symbols:
+            continue
+        reason = "no market data available" if frame.empty else "insufficient price history for scoring"
+        journal.log_decision(
+            DecisionLog(
+                symbol=symbol,
+                score=None,
+                decision="skip",
+                reason=reason,
+                notional=None,
+                estimated_cost=None,
+                order_id=None,
+            )
+        )
+    if not candidates:
+        LOGGER.info("No candidates produced from current data.")
+        return
+    for candidate in candidates:
+        journal.log_decision(
+            DecisionLog(
+                symbol=candidate.symbol,
+                score=candidate.score,
+                decision="scan",
+                reason=candidate.explanation,
+                notional=None,
+                estimated_cost=None,
+                order_id=None,
+            )
+        )
+        LOGGER.info("%s score=%.2f %s", candidate.symbol, candidate.score, candidate.explanation)
+
+
+def run_trade(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) -> None:
+    account = broker.get_account()
+    if account.multiplier and Decimal(str(account.multiplier)) > Decimal("1"):
+        raise RuntimeError("Margin accounts are not allowed for this bot.")
+
+    positions = broker.get_positions()
+    held_symbols = [position.symbol for position in positions]
+    journal.log_daily_equity(
+        equity=float(account.equity),
+        cash=float(account.cash),
+        buying_power=float(account.buying_power),
+    )
+
+    market_data = MarketDataService(settings)
+    frames = market_data.get_recent_bars(settings.universe)
+    candidates = rank_candidates(frames)
+    ranked_symbols = {candidate.symbol for candidate in candidates}
+    for symbol, frame in frames.items():
+        if symbol in ranked_symbols:
+            continue
+        reason = "no market data available" if frame.empty else "insufficient price history for scoring"
+        journal.log_decision(
+            DecisionLog(
+                symbol=symbol,
+                score=None,
+                decision="skip",
+                reason=reason,
+                notional=None,
+                estimated_cost=None,
+                order_id=None,
+            )
+        )
+    if not candidates:
+        LOGGER.info("No trade candidates available.")
+        return
+
+    available_slots = max(settings.max_positions - len(held_symbols), 0)
+    day_start_equity = journal.get_day_start_equity() or settings.starting_capital
+    for candidate in candidates[:available_slots]:
+        risk = check_buy_risk(
+            settings=settings,
+            account_buying_power=float(account.buying_power),
+            current_equity=float(account.equity),
+            day_start_equity=day_start_equity,
+            open_positions=held_symbols,
+            symbol=candidate.symbol,
+            notional=settings.max_position_notional,
+        )
+        if not risk.approved:
+            journal.log_decision(
+                DecisionLog(
+                    symbol=candidate.symbol,
+                    score=candidate.score,
+                    decision="skip",
+                    reason=risk.reason,
+                    notional=settings.max_position_notional,
+                    estimated_cost=risk.estimated_cost,
+                    order_id=None,
+                )
+            )
+            LOGGER.info("Skipped %s: %s", candidate.symbol, risk.reason)
+            continue
+
+        order = broker.submit_market_buy_notional(candidate.symbol, settings.max_position_notional)
+        held_symbols.append(candidate.symbol)
+        journal.log_decision(
+            DecisionLog(
+                symbol=candidate.symbol,
+                score=candidate.score,
+                decision="buy",
+                reason=candidate.explanation,
+                notional=settings.max_position_notional,
+                estimated_cost=risk.estimated_cost,
+                order_id=str(order.id),
+            )
+        )
+        journal.log_trade(
+            symbol=candidate.symbol,
+            side="buy",
+            qty=None,
+            notional=settings.max_position_notional,
+            estimated_cost=risk.estimated_cost,
+            order_id=str(order.id),
+            status=getattr(order, "status", None),
+        )
+        LOGGER.info("Submitted buy for %s notional=%.2f", candidate.symbol, settings.max_position_notional)
+
+    for candidate in candidates[available_slots:]:
+        journal.log_decision(
+            DecisionLog(
+                symbol=candidate.symbol,
+                score=candidate.score,
+                decision="skip",
+                reason="no remaining position slots",
+                notional=settings.max_position_notional,
+                estimated_cost=estimate_slippage_cost(settings.max_position_notional, settings.slippage_fraction),
+                order_id=None,
+            )
+        )
+
+
+def run_close_all(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) -> None:
+    positions = broker.get_positions()
+    for position in positions:
+        qty = float(position.qty)
+        notional = float(position.market_value)
+        estimated_cost = estimate_slippage_cost(notional, settings.slippage_fraction)
+        order = broker.submit_market_sell_qty(position.symbol, qty)
+        journal.log_decision(
+            DecisionLog(
+                symbol=position.symbol,
+                score=None,
+                decision="sell",
+                reason="close-all command",
+                notional=notional,
+                estimated_cost=estimated_cost,
+                order_id=str(order.id),
+            )
+        )
+        journal.log_trade(
+            symbol=position.symbol,
+            side="sell",
+            qty=qty,
+            notional=notional,
+            estimated_cost=estimated_cost,
+            order_id=str(order.id),
+            status=getattr(order, "status", None),
+        )
+        LOGGER.info("Submitted sell for %s qty=%s", position.symbol, position.qty)
+
+
+def run_report(settings: Settings) -> None:
+    path = generate_report(settings)
+    LOGGER.info("Report written to %s", path)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Paper-only Alpaca trading bot")
+    parser.add_argument("mode", choices=["scan", "trade", "close-all", "report"])
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    settings = load_settings()
+    journal = Journal(settings.db_path)
+
+    if args.mode == "report":
+        run_report(settings)
+        return
+
+    broker = AlpacaPaperBroker(settings)
+
+    if args.mode == "scan":
+        run_scan(settings, broker, journal)
+    elif args.mode == "trade":
+        run_trade(settings, broker, journal)
+    elif args.mode == "close-all":
+        run_close_all(settings, broker, journal)
+
+
+if __name__ == "__main__":
+    main()
