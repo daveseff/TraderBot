@@ -2,24 +2,28 @@ from __future__ import annotations
 
 import argparse
 import logging
+from dataclasses import replace
 
+from .ai_research import AIResearcher
 from .broker_alpaca import AlpacaPaperBroker
 from .config import Settings, load_settings
 from .journal import DecisionLog, Journal
 from .market_data import MarketDataService
 from .report import generate_report
 from .risk import check_buy_risk, estimate_slippage_cost
-from .strategy import rank_candidates
+from .strategy import Candidate, filter_candidates, rank_candidates, select_prefilter_candidates
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 LOGGER = logging.getLogger(__name__)
 
 
 def run_scan(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) -> None:
-    del broker
+    symbols = _resolve_universe(settings, broker)
     market_data = MarketDataService(settings)
-    frames = market_data.get_recent_bars(settings.universe)
+    frames = market_data.get_recent_bars(symbols)
     candidates = rank_candidates(frames)
+    candidates = filter_candidates(candidates, settings)
+    candidates = _apply_research_layer(settings, candidates)
     ranked_symbols = {candidate.symbol for candidate in candidates}
     for symbol, frame in frames.items():
         if symbol in ranked_symbols:
@@ -76,8 +80,11 @@ def run_trade(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) -
     )
 
     market_data = MarketDataService(settings)
-    frames = market_data.get_recent_bars(settings.universe)
+    symbols = _resolve_universe(settings, broker)
+    frames = market_data.get_recent_bars(symbols)
     candidates = rank_candidates(frames)
+    candidates = filter_candidates(candidates, settings)
+    candidates = _apply_research_layer(settings, candidates)
     ranked_symbols = {candidate.symbol for candidate in candidates}
     for symbol, frame in frames.items():
         if symbol in ranked_symbols:
@@ -210,6 +217,49 @@ def _get_cash_only_buying_power(account) -> float:
             continue
     positive_values = [value for value in values if value > 0]
     return min(positive_values) if positive_values else 0.0
+
+
+def _resolve_universe(settings: Settings, broker: AlpacaPaperBroker) -> list[str]:
+    if settings.universe:
+        return settings.universe
+    symbols = broker.list_tradable_symbols(settings.research_universe_limit)
+    if not symbols:
+        raise RuntimeError("No tradable symbols discovered from Alpaca.")
+    LOGGER.info("Discovered %d tradable symbols from Alpaca for research.", len(symbols))
+    return symbols
+
+
+def _apply_research_layer(settings: Settings, candidates: list[Candidate]) -> list[Candidate]:
+    prefiltered = select_prefilter_candidates(candidates, settings.ai_research_candidate_count)
+    researcher = AIResearcher(settings)
+    if not researcher.enabled:
+        LOGGER.info(
+            "AI research disabled or no OPENAI_API_KEY set; using rule-based ranking across %d prefiltered symbols.",
+            len(prefiltered),
+        )
+        return prefiltered
+
+    ai_decisions = researcher.rank_candidates(prefiltered)
+    if not ai_decisions:
+        LOGGER.info("AI research returned no ranking; using rule-based ranking.")
+        return prefiltered
+
+    by_symbol = {candidate.symbol: candidate for candidate in prefiltered}
+    ranked: list[Candidate] = []
+    for decision in sorted(ai_decisions, key=lambda item: item.ai_rank):
+        candidate = by_symbol.get(decision.symbol)
+        if candidate is None:
+            continue
+        ranked.append(
+            replace(
+                candidate,
+                score=decision.ai_score,
+                explanation=f"AI thesis: {decision.thesis} | Risks: {decision.risks} | Base: {candidate.explanation}",
+            )
+        )
+
+    remaining = [candidate for candidate in prefiltered if candidate.symbol not in {item.symbol for item in ranked}]
+    return ranked + remaining
 
 
 def build_parser() -> argparse.ArgumentParser:

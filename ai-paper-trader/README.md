@@ -2,6 +2,8 @@
 
 Experimental paper-trading stock bot for Alpaca paper accounts only. It uses simple momentum and liquidity scoring, enforces conservative risk limits, journals every decision to SQLite, and can generate a markdown performance report after a two-week experiment.
 
+The bot can discover symbols dynamically from Alpaca screeners and optionally use either OpenAI or a local Ollama model to rank the strongest candidates from structured market metrics instead of relying on a hardcoded ticker list.
+
 ## Safety constraints
 
 - Paper trading only
@@ -45,13 +47,50 @@ ai-paper-trader/
 
 1. Create an Alpaca paper account at <https://alpaca.markets/>.
 2. In the Alpaca dashboard, create paper trading API keys.
-3. Copy the environment template:
+3. Choose an AI provider for the ranking layer:
+   OpenAI, or a local Ollama instance.
+4. Copy the environment template:
 
 ```bash
 cp .env.example .env
 ```
 
-4. Edit `.env` and set your paper API key and secret.
+5. Edit `.env` and set your paper API key and secret.
+
+To use dynamic AI-driven research, leave `UNIVERSE` blank or remove it. The bot will discover liquid candidates from Alpaca's market screeners, then:
+
+- filter out low-price and low-liquidity names
+- score the survivors with momentum and volatility metrics
+- optionally ask the configured OpenAI model to rank the final candidate set
+
+If AI research is disabled or the configured provider is unavailable, the bot still uses dynamic discovery and falls back to rule-based ranking only.
+
+## AI provider configuration
+
+Use OpenAI:
+
+```env
+AI_PROVIDER=openai
+OPENAI_API_KEY=your_openai_key
+OPENAI_MODEL=gpt-4o-mini
+AI_RESEARCH_ENABLED=true
+```
+
+Use Ollama:
+
+```env
+AI_PROVIDER=ollama
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+OLLAMA_MODEL=llama3.1
+AI_RESEARCH_ENABLED=true
+```
+
+Notes for Ollama:
+
+- `host.docker.internal` is mapped in `docker-compose.yml` so the container can reach your host's Ollama daemon.
+- On Linux, this requires a recent Docker version with `host-gateway` support.
+- The bot uses Ollama's native `/api/chat` endpoint and requests JSON output.
+- If the local model is unavailable or returns invalid JSON, the bot falls back to rule-based ranking.
 
 ## Run with Docker
 

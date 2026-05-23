@@ -4,6 +4,8 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from .config import Settings
+
 
 @dataclass(frozen=True)
 class Candidate:
@@ -14,6 +16,7 @@ class Candidate:
     momentum_5d: float
     momentum_20d: float
     volatility: float
+    avg_dollar_volume_20d: float
 
 
 def _pct_change(current: float, prior: float) -> float:
@@ -58,9 +61,26 @@ def score_symbol(symbol: str, frame: pd.DataFrame) -> Candidate | None:
         momentum_5d=momentum_5d,
         momentum_20d=momentum_20d,
         volatility=volatility,
+        avg_dollar_volume_20d=float((data["close"] * data["volume"]).tail(20).mean()),
     )
 
 
 def rank_candidates(frames: dict[str, pd.DataFrame]) -> list[Candidate]:
     candidates = [candidate for symbol, frame in frames.items() if (candidate := score_symbol(symbol, frame))]
     return sorted(candidates, key=lambda candidate: candidate.score, reverse=True)
+
+
+def select_prefilter_candidates(candidates: list[Candidate], limit: int) -> list[Candidate]:
+    return sorted(
+        candidates,
+        key=lambda candidate: (candidate.score, candidate.avg_dollar_volume_20d),
+        reverse=True,
+    )[:limit]
+
+
+def filter_candidates(candidates: list[Candidate], settings: Settings) -> list[Candidate]:
+    return [
+        candidate
+        for candidate in candidates
+        if candidate.price >= settings.min_price and candidate.avg_dollar_volume_20d >= settings.min_avg_dollar_volume
+    ]
