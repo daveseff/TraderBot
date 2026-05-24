@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+from datetime import datetime, timezone
 from dataclasses import replace
 
 from .ai_research import AIResearcher
@@ -219,13 +220,15 @@ def run_daemon(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) 
             if settings.market_open_only:
                 clock = broker.get_clock()
                 if not getattr(clock, "is_open", False):
+                    sleep_seconds = _seconds_until_next_open(getattr(clock, "next_open", None))
                     LOGGER.info(
-                        "Cycle %d skipped: market closed. Next open=%s next close=%s",
+                        "Cycle %d skipped: market closed. Next open=%s next close=%s sleep_seconds=%s",
                         cycle,
                         getattr(clock, "next_open", None),
                         getattr(clock, "next_close", None),
+                        sleep_seconds,
                     )
-                    time.sleep(settings.run_interval_seconds)
+                    time.sleep(sleep_seconds)
                     continue
 
             LOGGER.info("Starting trading cycle %d", cycle)
@@ -252,6 +255,14 @@ def _get_cash_only_buying_power(account) -> float:
             continue
     positive_values = [value for value in values if value > 0]
     return min(positive_values) if positive_values else 0.0
+
+
+def _seconds_until_next_open(next_open: object) -> int:
+    if not isinstance(next_open, datetime):
+        return 3600
+    now = datetime.now(timezone.utc)
+    delta = (next_open - now).total_seconds()
+    return max(int(delta) + 5, 60)
 
 
 def _resolve_universe(settings: Settings, broker: AlpacaPaperBroker) -> list[str]:
