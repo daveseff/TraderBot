@@ -112,6 +112,13 @@ Run the trading cycle:
 docker compose run --rm trader python -m bot.main trade
 ```
 
+Run continuously in a long-lived loop:
+
+```bash
+docker compose up -d
+docker compose logs -f trader
+```
+
 Generate a markdown report:
 
 ```bash
@@ -139,10 +146,13 @@ ruff check .
 - SQLite database defaults to `/app/data/trader.db`
 - Markdown reports default to `/app/data/reports`
 - Docker mounts local `./data` into the container so journals and reports persist
+- Default container mode is `python -m bot.main daemon`
+- `RUN_INTERVAL_SECONDS` controls how often a trade cycle runs
+- `MARKET_OPEN_ONLY=true` skips cycles while the market is closed
 
 ## Suggested two-week experiment
 
-Run `trade` once per market day for 2 weeks, then run `report` to review:
+Run the daemon for 2 weeks, then run `report` to review:
 
 - Starting capital vs ending equity
 - Estimated slippage costs
@@ -152,7 +162,7 @@ Run `trade` once per market day for 2 weeks, then run `report` to review:
 
 ## Scheduling later
 
-You can schedule the trading command later with cron or systemd.
+You can either keep the daemon container running or schedule the one-shot trading command later with cron or systemd.
 
 Example cron entry for weekdays:
 

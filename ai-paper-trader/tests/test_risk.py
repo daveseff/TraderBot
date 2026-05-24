@@ -25,6 +25,8 @@ def build_settings() -> Settings:
         ai_research_candidate_count=10,
         min_price=5.0,
         min_avg_dollar_volume=5_000_000.0,
+        run_interval_seconds=900,
+        market_open_only=True,
         db_path=Path("/tmp/test.db"),
         reports_dir=Path("/tmp/reports"),
     )

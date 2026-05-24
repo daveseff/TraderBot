@@ -72,6 +72,8 @@ def test_filter_candidates_enforces_price_and_liquidity_floors() -> None:
         ai_research_candidate_count=10,
         min_price=5.0,
         min_avg_dollar_volume=5_000_000.0,
+        run_interval_seconds=900,
+        market_open_only=True,
         db_path=Path("/tmp/test.db"),
         reports_dir=Path("/tmp/reports"),
     )

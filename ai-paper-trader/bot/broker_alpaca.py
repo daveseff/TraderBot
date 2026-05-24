@@ -36,6 +36,9 @@ class AlpacaPaperBroker:
     def get_positions(self):
         return self.client.get_all_positions()
 
+    def get_clock(self):
+        return self.client.get_clock()
+
     def list_tradable_symbols(self, limit: int) -> list[str]:
         request = GetAssetsRequest(
             status=AssetStatus.ACTIVE,

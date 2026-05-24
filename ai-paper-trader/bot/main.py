@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import time
 from dataclasses import replace
 
 from .ai_research import AIResearcher
@@ -205,6 +206,40 @@ def run_report(settings: Settings) -> None:
     LOGGER.info("Report written to %s", path)
 
 
+def run_daemon(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) -> None:
+    LOGGER.info(
+        "Starting continuous trader loop with interval=%ss market_open_only=%s",
+        settings.run_interval_seconds,
+        settings.market_open_only,
+    )
+    cycle = 0
+    while True:
+        cycle += 1
+        try:
+            if settings.market_open_only:
+                clock = broker.get_clock()
+                if not getattr(clock, "is_open", False):
+                    LOGGER.info(
+                        "Cycle %d skipped: market closed. Next open=%s next close=%s",
+                        cycle,
+                        getattr(clock, "next_open", None),
+                        getattr(clock, "next_close", None),
+                    )
+                    time.sleep(settings.run_interval_seconds)
+                    continue
+
+            LOGGER.info("Starting trading cycle %d", cycle)
+            run_trade(settings, broker, journal)
+            LOGGER.info("Completed trading cycle %d", cycle)
+        except KeyboardInterrupt:
+            LOGGER.info("Trader loop interrupted; exiting.")
+            raise
+        except Exception:
+            LOGGER.exception("Trading cycle %d failed; continuing after sleep.", cycle)
+
+        time.sleep(settings.run_interval_seconds)
+
+
 def _get_cash_only_buying_power(account) -> float:
     values: list[float] = []
     for field_name in ("cash", "non_marginable_buying_power", "buying_power"):
@@ -264,7 +299,7 @@ def _apply_research_layer(settings: Settings, candidates: list[Candidate]) -> li
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Paper-only Alpaca trading bot")
-    parser.add_argument("mode", choices=["scan", "trade", "close-all", "report"])
+    parser.add_argument("mode", choices=["scan", "trade", "daemon", "close-all", "report"])
     return parser
 
 
@@ -283,6 +318,8 @@ def main() -> None:
         run_scan(settings, broker, journal)
     elif args.mode == "trade":
         run_trade(settings, broker, journal)
+    elif args.mode == "daemon":
+        run_daemon(settings, broker, journal)
     elif args.mode == "close-all":
         run_close_all(settings, broker, journal)
 

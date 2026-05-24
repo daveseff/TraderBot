@@ -32,6 +32,8 @@ class Settings:
     ai_research_candidate_count: int
     min_price: float
     min_avg_dollar_volume: float
+    run_interval_seconds: int
+    market_open_only: bool
     db_path: Path
     reports_dir: Path
 
@@ -105,6 +107,8 @@ def load_settings() -> Settings:
         ai_research_candidate_count=_parse_int("AI_RESEARCH_CANDIDATE_COUNT", "12"),
         min_price=_parse_float("MIN_PRICE", "5"),
         min_avg_dollar_volume=_parse_float("MIN_AVG_DOLLAR_VOLUME", "5000000"),
+        run_interval_seconds=_parse_int("RUN_INTERVAL_SECONDS", "900"),
+        market_open_only=_parse_bool("MARKET_OPEN_ONLY", "true"),
         db_path=Path(os.getenv("DB_PATH", "/app/data/trader.db")),
         reports_dir=Path(os.getenv("REPORTS_DIR", "/app/data/reports")),
     )

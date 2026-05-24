@@ -1,10 +1,11 @@
 services:
   trader:
     build: .
+    restart: unless-stopped
     env_file:
       - .env
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
       - ./data:/app/data
-    command: python -m bot.main trade
+    command: python -m bot.main daemon
