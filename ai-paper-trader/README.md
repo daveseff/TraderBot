@@ -125,6 +125,12 @@ Generate a markdown report:
 docker compose run --rm trader python -m bot.main report
 ```
 
+Generate a postmortem review report with skip patterns and losing-trade context:
+
+```bash
+docker compose run --rm trader python -m bot.main review
+```
+
 Close all paper positions:
 
 ```bash

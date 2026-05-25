@@ -11,7 +11,7 @@ from .broker_alpaca import AlpacaPaperBroker
 from .config import Settings, load_settings
 from .journal import DecisionLog, Journal
 from .market_data import MarketDataService
-from .report import generate_report
+from .report import generate_report, generate_review_report
 from .risk import check_buy_risk, estimate_slippage_cost
 from .strategy import Candidate, filter_candidates, rank_candidates, select_prefilter_candidates
 
@@ -23,9 +23,16 @@ def run_scan(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) ->
     symbols = _resolve_universe(settings, broker)
     market_data = MarketDataService(settings)
     frames = market_data.get_recent_bars(symbols)
-    candidates = rank_candidates(frames)
-    candidates = filter_candidates(candidates, settings)
+    scored_candidates = rank_candidates(frames)
+    candidates = filter_candidates(scored_candidates, settings)
     candidates = _apply_research_layer(settings, candidates)
+    _log_research_summary(
+        mode="scan",
+        universe_count=len(symbols),
+        scored_count=len(scored_candidates),
+        filtered_count=len(candidates),
+        candidates=candidates,
+    )
     ranked_symbols = {candidate.symbol for candidate in candidates}
     for symbol, frame in frames.items():
         if symbol in ranked_symbols:
@@ -57,7 +64,7 @@ def run_scan(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) ->
                 order_id=None,
             )
         )
-        LOGGER.info("%s score=%.2f %s", candidate.symbol, candidate.score, candidate.explanation)
+        LOGGER.info("SCAN %s score=%.2f %s", candidate.symbol, candidate.score, _brief(candidate.explanation))
 
 
 def run_trade(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) -> None:
@@ -84,9 +91,16 @@ def run_trade(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) -
     market_data = MarketDataService(settings)
     symbols = _resolve_universe(settings, broker)
     frames = market_data.get_recent_bars(symbols)
-    candidates = rank_candidates(frames)
-    candidates = filter_candidates(candidates, settings)
+    scored_candidates = rank_candidates(frames)
+    candidates = filter_candidates(scored_candidates, settings)
     candidates = _apply_research_layer(settings, candidates)
+    _log_research_summary(
+        mode="trade",
+        universe_count=len(symbols),
+        scored_count=len(scored_candidates),
+        filtered_count=len(candidates),
+        candidates=candidates,
+    )
     ranked_symbols = {candidate.symbol for candidate in candidates}
     for symbol, frame in frames.items():
         if symbol in ranked_symbols:
@@ -131,7 +145,13 @@ def run_trade(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) -
                     order_id=None,
                 )
             )
-            LOGGER.info("Skipped %s: %s", candidate.symbol, risk.reason)
+            LOGGER.info(
+                "DECISION SKIP %s score=%.2f reason=%s research=%s",
+                candidate.symbol,
+                candidate.score,
+                risk.reason,
+                _brief(candidate.explanation),
+            )
             continue
 
         order = broker.submit_market_buy_notional(candidate.symbol, settings.max_position_notional)
@@ -156,7 +176,14 @@ def run_trade(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) -
             order_id=str(order.id),
             status=getattr(order, "status", None),
         )
-        LOGGER.info("Submitted buy for %s notional=%.2f", candidate.symbol, settings.max_position_notional)
+        LOGGER.info(
+            "DECISION BUY %s score=%.2f notional=%.2f cost=%.4f thesis=%s",
+            candidate.symbol,
+            candidate.score,
+            settings.max_position_notional,
+            risk.estimated_cost,
+            _brief(candidate.explanation),
+        )
 
     for candidate in candidates[available_slots:]:
         journal.log_decision(
@@ -169,6 +196,12 @@ def run_trade(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) -
                 estimated_cost=estimate_slippage_cost(settings.max_position_notional, settings.slippage_fraction),
                 order_id=None,
             )
+        )
+        LOGGER.info(
+            "DECISION SKIP %s score=%.2f reason=no remaining position slots research=%s",
+            candidate.symbol,
+            candidate.score,
+            _brief(candidate.explanation),
         )
 
 
@@ -205,6 +238,11 @@ def run_close_all(settings: Settings, broker: AlpacaPaperBroker, journal: Journa
 def run_report(settings: Settings) -> None:
     path = generate_report(settings)
     LOGGER.info("Report written to %s", path)
+
+
+def run_review(settings: Settings) -> None:
+    path = generate_review_report(settings)
+    LOGGER.info("Review report written to %s", path)
 
 
 def run_daemon(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) -> None:
@@ -265,6 +303,40 @@ def _seconds_until_next_open(next_open: object) -> int:
     return max(int(delta) + 5, 60)
 
 
+def _log_research_summary(
+    *,
+    mode: str,
+    universe_count: int,
+    scored_count: int,
+    filtered_count: int,
+    candidates: list[Candidate],
+) -> None:
+    LOGGER.info(
+        "RESEARCH mode=%s universe=%d scored=%d ranked=%d",
+        mode,
+        universe_count,
+        scored_count,
+        filtered_count,
+    )
+    for index, candidate in enumerate(candidates[:5], start=1):
+        LOGGER.info(
+            "RANK %d %s score=%.2f price=%.2f adv20=$%.0f why=%s",
+            index,
+            candidate.symbol,
+            candidate.score,
+            candidate.price,
+            candidate.avg_dollar_volume_20d,
+            _brief(candidate.explanation),
+        )
+
+
+def _brief(reason: str, limit: int = 220) -> str:
+    compact = " ".join(reason.split())
+    if len(compact) <= limit:
+        return compact
+    return f"{compact[: limit - 3]}..."
+
+
 def _resolve_universe(settings: Settings, broker: AlpacaPaperBroker) -> list[str]:
     if settings.universe:
         return settings.universe
@@ -310,7 +382,7 @@ def _apply_research_layer(settings: Settings, candidates: list[Candidate]) -> li
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Paper-only Alpaca trading bot")
-    parser.add_argument("mode", choices=["scan", "trade", "daemon", "close-all", "report"])
+    parser.add_argument("mode", choices=["scan", "trade", "daemon", "close-all", "report", "review"])
     return parser
 
 
@@ -321,6 +393,9 @@ def main() -> None:
 
     if args.mode == "report":
         run_report(settings)
+        return
+    if args.mode == "review":
+        run_review(settings)
         return
 
     broker = AlpacaPaperBroker(settings)
