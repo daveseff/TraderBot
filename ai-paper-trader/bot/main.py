@@ -82,6 +82,9 @@ def run_trade(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) -
 
     positions = broker.get_positions()
     held_symbols = [position.symbol for position in positions]
+    bought_symbols: list[str] = []
+    sold_symbols: list[str] = []
+    _log_positions_snapshot("START", positions)
     journal.log_daily_equity(
         equity=float(account.equity),
         cash=float(account.cash),
@@ -184,6 +187,7 @@ def run_trade(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) -
             risk.estimated_cost,
             _brief(candidate.explanation),
         )
+        bought_symbols.append(candidate.symbol)
 
     for candidate in candidates[available_slots:]:
         journal.log_decision(
@@ -204,9 +208,15 @@ def run_trade(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) -
             _brief(candidate.explanation),
         )
 
+    end_positions = broker.get_positions()
+    _log_cycle_activity(bought_symbols=bought_symbols, sold_symbols=sold_symbols)
+    _log_positions_snapshot("END", end_positions)
+
 
 def run_close_all(settings: Settings, broker: AlpacaPaperBroker, journal: Journal) -> None:
     positions = broker.get_positions()
+    sold_symbols: list[str] = []
+    _log_positions_snapshot("PRE-CLOSE", positions)
     for position in positions:
         qty = float(position.qty)
         notional = float(position.market_value)
@@ -233,6 +243,8 @@ def run_close_all(settings: Settings, broker: AlpacaPaperBroker, journal: Journa
             status=getattr(order, "status", None),
         )
         LOGGER.info("Submitted sell for %s qty=%s", position.symbol, position.qty)
+        sold_symbols.append(position.symbol)
+    _log_cycle_activity(bought_symbols=[], sold_symbols=sold_symbols)
 
 
 def run_report(settings: Settings) -> None:
@@ -328,6 +340,24 @@ def _log_research_summary(
             candidate.avg_dollar_volume_20d,
             _brief(candidate.explanation),
         )
+
+
+def _log_positions_snapshot(label: str, positions: list) -> None:
+    if not positions:
+        LOGGER.info("POSITIONS %s none", label)
+        return
+
+    summary = ", ".join(
+        f"{position.symbol}(qty={float(position.qty):.6f}, mv=${float(position.market_value):.2f})"
+        for position in positions
+    )
+    LOGGER.info("POSITIONS %s count=%d %s", label, len(positions), summary)
+
+
+def _log_cycle_activity(*, bought_symbols: list[str], sold_symbols: list[str]) -> None:
+    bought = ", ".join(bought_symbols) if bought_symbols else "none"
+    sold = ", ".join(sold_symbols) if sold_symbols else "none"
+    LOGGER.info("CYCLE ACTIVITY bought=%s sold=%s", bought, sold)
 
 
 def _brief(reason: str, limit: int = 220) -> str:
